@@ -2,9 +2,6 @@ name: Build NovaFlux (cloud)
 
 on:
   workflow_dispatch: {}
-  push:
-    paths:
-      - 'novaflux-iptv-android15.zip'
 
 jobs:
   build:
