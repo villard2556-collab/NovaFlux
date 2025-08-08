@@ -2,12 +2,16 @@ name: Build NovaFlux (cloud)
 
 on:
   workflow_dispatch: {}
+  push:
+    paths:
+      - 'novaflux-iptv-android15.zip'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -15,59 +19,38 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK (manual)
-        run: |
-          sudo mkdir -p /usr/local/lib/android/sdk
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
-          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
-          sudo unzip -q cmdtools.zip -d /usr/local/lib/android/sdk
-          sudo mkdir -p /usr/local/lib/android/sdk/cmdline-tools/latest
-          sudo mv /usr/local/lib/android/sdk/cmdline-tools/* /usr/local/lib/android/sdk/cmdline-tools/latest || true
-          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses
-          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Unzip project
         run: |
+          sudo apt-get update && sudo apt-get install -y unzip
           unzip -o "novaflux-iptv-android15.zip" -d .
-          ROOT=$(ls -1d NovaFlux* nova* | head -n 1)
+          ROOT=$(ls -1d NovaFlux* Nova* | head -n1)
           echo "ROOT=$ROOT"
           shopt -s dotglob
-          mv "$ROOT"/* ./ || true
+          mv "$ROOT"/* .
+          rmdir "$ROOT" || true
+          # Harmoniser les SDK si besoin
+          sed -i 's/compileSdk *35/compileSdk 34/g' app/build.gradle || true
+          sed -i 's/targetSdk *35/targetSdk 34/g' app/build.gradle || true
 
-      - name: Patch Gradle files (force compatible versions)
-        run: |
-          cat > build.gradle <<'EOF'
-          plugins {
-              id 'com.android.application' version '8.4.1' apply false
-              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
-          }
-          EOF
+      - name: Build Debug APK
+        uses: gradle/gradle-build-action@v3
+        with:
+          arguments: ":app:assembleDebug"
 
-          cat > settings.gradle <<'EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories { google(); mavenCentral() }
-          }
-          rootProject.name = "NovaFlux"
-          include(":app")
-          EOF
-
-          cat > gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2048m
-          android.useAndroidX=true
-          android.enableJetifier=true
-          kotlin.code.style=official
-          EOF
-
-          mkdir -p app
-          cat > app/build.gradle <<'EOF'
-          plugins {
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovaFlux-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
               id 'com.android.application'
               id 'org.jetbrains.kotlin.android'
           }
