@@ -1,4 +1,4 @@
-name: Build NovaFlux (cloud) — diagnose
+name: Build NovaFlux (cloud)
 
 on:
   workflow_dispatch: {}
@@ -6,10 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -18,86 +16,123 @@ jobs:
           java-version: '17'
 
       - name: Install Android SDK (manual)
-        env:
-          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
         run: |
-          set -eux
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          cd "$ANDROID_SDK_ROOT/cmdline-tools"
-          curl -sSL -o clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q clt.zip
-          mv cmdline-tools latest
-          SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-          "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          sudo mkdir -p /usr/local/lib/android/sdk
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
+          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
+          sudo unzip -q cmdtools.zip -d /usr/local/lib/android/sdk
+          sudo mkdir -p /usr/local/lib/android/sdk/cmdline-tools/latest
+          sudo mv /usr/local/lib/android/sdk/cmdline-tools/* /usr/local/lib/android/sdk/cmdline-tools/latest || true
+          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
         run: |
-          set -euxo pipefail
-          sudo apt-get update && sudo apt-get install -y unzip
-          ZIP=$(ls -1 *.zip | head -n 1 || true)
-          [ -z "$ZIP" ] && { echo "No ZIP found at repo root"; exit 1; }
-          unzip -o "$ZIP" -d extracted
-          ROOT=$(ls -1d extracted/NovaFlux_* extracted/NovaFlux* 2>/dev/null | head -n 1 || true)
-          [ -z "$ROOT" ] && ROOT="extracted"
+          unzip -o "novaflux-iptv-android15.zip" -d .
+          ROOT=$(ls -1d NovaFlux* nova* | head -n 1)
+          echo "ROOT=$ROOT"
           shopt -s dotglob
-          mv "$ROOT"/* ./
+          mv "$ROOT"/* ./ || true
 
-      - name: Force Gradle 8.10.2 + Kotlin 1.9.24 + Java 17
+      - name: Patch Gradle files (force compatible versions)
         run: |
-          set -euxo pipefail
-          # Gradle wrapper
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip#' gradle/wrapper/gradle-wrapper.properties || true
-          fi
-          chmod +x ./gradlew || true
-          # Repos + options
-          echo "org.gradle.jvmargs=-Xmx3g -Dkotlin.daemon.jvm.options=-Xmx2g" >> gradle.properties || true
-          echo "android.useAndroidX=true" >> gradle.properties || true
-          echo "android.enableJetifier=true" >> gradle.properties || true
-          # API 34 par sécurité
-          sed -i 's/compileSdk *35/compileSdk 34/g' app/build.gradle || true
-          sed -i 's/targetSdk *35/targetSdk 34/g' app/build.gradle || true
-          # Kotlin & jvmTarget
-          for f in $(git ls-files | grep -E '\.gradle(\.kts)?$' || true); do
-            sed -i "s/kotlin-gradle-plugin:[0-9.]\+/kotlin-gradle-plugin:1.9.24/g" "$f" || true
-            sed -i "s/id[[:space:]]*['\"]org.jetbrains.kotlin.android['\"][[:space:]]*version[[:space:]]*['\"][^'\"]*['\"]/id 'org.jetbrains.kotlin.android' version '1.9.24'/g" "$f" || true
-          done
-          cat >> app/build.gradle <<'EOF'
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.4.1' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
 
-          // --- CI patch: jvmTarget 17 ---
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "NovaFlux"
+          include(":app")
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2048m
+          android.useAndroidX=true
+          android.enableJetifier=true
+          kotlin.code.style=official
+          EOF
+
+          mkdir -p app
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
           android {
+              namespace 'com.example.iptvreader'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.example.iptvreader"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+                  vectorDrawables { useSupportLibrary = true }
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
               kotlinOptions {
                   jvmTarget = '17'
+                  freeCompilerArgs += ['-Xjvm-default=all-compatibility']
               }
+              buildFeatures { viewBinding true }
           }
-          tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-              kotlinOptions { jvmTarget = "17" }
+          dependencies {
+              implementation platform('org.jetbrains.kotlin:kotlin-bom:1.9.24')
+              implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24'
+              implementation 'androidx.core:core-ktx:1.13.1'
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.6'
+              implementation 'androidx.media3:media3-exoplayer:1.4.1'
+              implementation 'androidx.media3:media3-ui:1.4.1'
+              implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
           }
-          // --- end patch ---
           EOF
 
-      - name: Print Gradle env
+      - name: Force Gradle 8.10.2
         run: |
-          ./gradlew -v || true
-          echo "---- gradle.properties ----"
-          cat gradle.properties || true
-          echo "---- app/build.gradle (tail) ----"
-          tail -n 80 app/build.gradle || true
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          if [ ! -f gradlew ]; then
+            curl -sL https://raw.githubusercontent.com/gradle/gradle/master/gradlew -o gradlew
+          fi
+          chmod +x gradlew
 
       - name: Clean & build (verbose)
         run: |
-          set -euxo pipefail
-          ./gradlew clean :app:assembleDebug --stacktrace --info --warning-mode all --no-daemon --console=plain
+          ./gradlew clean :app:assembleDebug --stacktrace --warning-mode all --no-daemon
+          echo "APK path: app/build/outputs/apk/debug/app-debug.apk"
 
-      - name: Upload APK (if built)
+      - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
