@@ -17,7 +17,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Installation manuelle du SDK Android (robuste)
+      # Installation manuelle du SDK Android (fiable)
       - name: Install Android SDK (manual)
         env:
           ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
@@ -30,7 +30,7 @@ jobs:
           mv cmdline-tools latest
           SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
 
-          # Accepter les licences sans casser sur le "broken pipe"
+          # Accepter les licences (ignore la fin de pipe)
           set +o pipefail || true
           yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null 2>&1 || true
           set -o pipefail || true
@@ -66,7 +66,7 @@ jobs:
       - name: Build Debug APK
         uses: gradle/gradle-build-action@v3
         with:
-          gradle-version: 8.4
+          gradle-version: 8.10.2
           arguments: ":app:assembleDebug"
 
       - name: Upload APK artifact
