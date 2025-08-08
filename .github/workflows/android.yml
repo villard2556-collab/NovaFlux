@@ -1,4 +1,4 @@
-name: Build NovaFlux (cloud)
+name: Build NovaFlux (cloud) — diagnose
 
 on:
   workflow_dispatch: {}
@@ -28,50 +28,47 @@ jobs:
           unzip -q clt.zip
           mv cmdline-tools latest
           SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          set +o pipefail || true
-          yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null 2>&1 || true
-          set -o pipefail || true
-          for i in 1 2 3; do
-            "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --install \
-              "platform-tools" "platforms;android-34" "build-tools;34.0.0" && break || sleep 5
-          done
+          yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      - name: Unzip project (auto-detect)
+      - name: Unzip project
         run: |
           set -euxo pipefail
           sudo apt-get update && sudo apt-get install -y unzip
           ZIP=$(ls -1 *.zip | head -n 1 || true)
-          if [ -z "$ZIP" ]; then echo "No ZIP found at repo root"; exit 1; fi
+          [ -z "$ZIP" ] && { echo "No ZIP found at repo root"; exit 1; }
           unzip -o "$ZIP" -d extracted
           ROOT=$(ls -1d extracted/NovaFlux_* extracted/NovaFlux* 2>/dev/null | head -n 1 || true)
           [ -z "$ROOT" ] && ROOT="extracted"
           shopt -s dotglob
           mv "$ROOT"/* ./
-          sed -i 's/compileSdk 35/compileSdk 34/g' app/build.gradle || true
-          sed -i 's/targetSdk 35/targetSdk 34/g' app/build.gradle || true
 
-      # --- Patch Kotlin/Java 17 pour éviter :app:compileDebugKotlin FAILED ---
-      - name: Force Kotlin 1.9.24 + jvmTarget 17
+      - name: Force Gradle 8.10.2 + Kotlin 1.9.24 + Java 17
         run: |
           set -euxo pipefail
-          # 1) Gradle properties (mémoire + flags AndroidX + daemon Kotlin)
+          # Gradle wrapper
+          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip#' gradle/wrapper/gradle-wrapper.properties || true
+          fi
+          chmod +x ./gradlew || true
+          # Repos + options
+          echo "org.gradle.jvmargs=-Xmx3g -Dkotlin.daemon.jvm.options=-Xmx2g" >> gradle.properties || true
           echo "android.useAndroidX=true" >> gradle.properties || true
           echo "android.enableJetifier=true" >> gradle.properties || true
-          echo "org.gradle.jvmargs=-Xmx3g -Dkotlin.daemon.jvm.options=-Xmx2g" >> gradle.properties || true
-
-          # 2) Mettre à jour les versions du plugin Kotlin partout
+          # API 34 par sécurité
+          sed -i 's/compileSdk *35/compileSdk 34/g' app/build.gradle || true
+          sed -i 's/targetSdk *35/targetSdk 34/g' app/build.gradle || true
+          # Kotlin & jvmTarget
           for f in $(git ls-files | grep -E '\.gradle(\.kts)?$' || true); do
             sed -i "s/kotlin-gradle-plugin:[0-9.]\+/kotlin-gradle-plugin:1.9.24/g" "$f" || true
             sed -i "s/id[[:space:]]*['\"]org.jetbrains.kotlin.android['\"][[:space:]]*version[[:space:]]*['\"][^'\"]*['\"]/id 'org.jetbrains.kotlin.android' version '1.9.24'/g" "$f" || true
           done
-
-          # 3) S'assurer que Java/Kotlin compilent en 17 (on ajoute un bloc si absent)
           cat >> app/build.gradle <<'EOF'
-          
-          // --- NovaFlux CI patch: enforce Java 17 & Kotlin jvmTarget 17 ---
+
+          // --- CI patch: jvmTarget 17 ---
           android {
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -87,13 +84,20 @@ jobs:
           // --- end patch ---
           EOF
 
-      - name: Build Debug APK
-        uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: 8.10.2
-          arguments: ":app:assembleDebug"
+      - name: Print Gradle env
+        run: |
+          ./gradlew -v || true
+          echo "---- gradle.properties ----"
+          cat gradle.properties || true
+          echo "---- app/build.gradle (tail) ----"
+          tail -n 80 app/build.gradle || true
 
-      - name: Upload APK artifact
+      - name: Clean & build (verbose)
+        run: |
+          set -euxo pipefail
+          ./gradlew clean :app:assembleDebug --stacktrace --info --warning-mode all --no-daemon --console=plain
+
+      - name: Upload APK (if built)
         if: success()
         uses: actions/upload-artifact@v4
         with:
