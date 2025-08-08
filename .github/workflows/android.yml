@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,23 +17,35 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # On installe le SDK Android manuellement (plus fiable)
+      # Installation manuelle du SDK Android (robuste)
       - name: Install Android SDK (manual)
         env:
           ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
         run: |
-          set -euxo pipefail
+          set -eux
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT/cmdline-tools"
           curl -sSL -o clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q clt.zip
           mv cmdline-tools latest
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          # Accepter les licences sans casser sur le "broken pipe"
+          set +o pipefail || true
+          yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null 2>&1 || true
+          set -o pipefail || true
+
+          # Installer avec retries (réseau capricieux)
+          for i in 1 2 3; do
+            "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --install \
+              "platform-tools" "platforms;android-34" "build-tools;34.0.0" && break || sleep 5
+          done
+
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      # On trouve le ZIP du projet et on l'extrait proprement
+      # Détection automatique du ZIP et extraction
       - name: Unzip project (auto-detect)
         run: |
           set -euxo pipefail
