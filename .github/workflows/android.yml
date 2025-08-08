@@ -17,7 +17,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Installation manuelle du SDK Android (fiable)
       - name: Install Android SDK (manual)
         env:
           ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
@@ -29,39 +28,64 @@ jobs:
           unzip -q clt.zip
           mv cmdline-tools latest
           SDKMAN="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-
-          # Accepter les licences (ignore la fin de pipe)
           set +o pipefail || true
           yes | "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null 2>&1 || true
           set -o pipefail || true
-
-          # Installer avec retries (réseau capricieux)
           for i in 1 2 3; do
             "$SDKMAN" --sdk_root="$ANDROID_SDK_ROOT" --install \
               "platform-tools" "platforms;android-34" "build-tools;34.0.0" && break || sleep 5
           done
-
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      # Détection automatique du ZIP et extraction
       - name: Unzip project (auto-detect)
         run: |
           set -euxo pipefail
           sudo apt-get update && sudo apt-get install -y unzip
-          echo "Repo content:" ; ls -la
           ZIP=$(ls -1 *.zip | head -n 1 || true)
-          echo "Using ZIP=$ZIP"
           if [ -z "$ZIP" ]; then echo "No ZIP found at repo root"; exit 1; fi
           unzip -o "$ZIP" -d extracted
-          echo "Extracted content:" ; ls -la extracted
           ROOT=$(ls -1d extracted/NovaFlux_* extracted/NovaFlux* 2>/dev/null | head -n 1 || true)
-          if [ -z "$ROOT" ]; then ROOT="extracted"; fi
+          [ -z "$ROOT" ] && ROOT="extracted"
           shopt -s dotglob
           mv "$ROOT"/* ./
           sed -i 's/compileSdk 35/compileSdk 34/g' app/build.gradle || true
           sed -i 's/targetSdk 35/targetSdk 34/g' app/build.gradle || true
+
+      # --- Patch Kotlin/Java 17 pour éviter :app:compileDebugKotlin FAILED ---
+      - name: Force Kotlin 1.9.24 + jvmTarget 17
+        run: |
+          set -euxo pipefail
+          # 1) Gradle properties (mémoire + flags AndroidX + daemon Kotlin)
+          echo "android.useAndroidX=true" >> gradle.properties || true
+          echo "android.enableJetifier=true" >> gradle.properties || true
+          echo "org.gradle.jvmargs=-Xmx3g -Dkotlin.daemon.jvm.options=-Xmx2g" >> gradle.properties || true
+
+          # 2) Mettre à jour les versions du plugin Kotlin partout
+          for f in $(git ls-files | grep -E '\.gradle(\.kts)?$' || true); do
+            sed -i "s/kotlin-gradle-plugin:[0-9.]\+/kotlin-gradle-plugin:1.9.24/g" "$f" || true
+            sed -i "s/id[[:space:]]*['\"]org.jetbrains.kotlin.android['\"][[:space:]]*version[[:space:]]*['\"][^'\"]*['\"]/id 'org.jetbrains.kotlin.android' version '1.9.24'/g" "$f" || true
+          done
+
+          # 3) S'assurer que Java/Kotlin compilent en 17 (on ajoute un bloc si absent)
+          cat >> app/build.gradle <<'EOF'
+          
+          // --- NovaFlux CI patch: enforce Java 17 & Kotlin jvmTarget 17 ---
+          android {
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+          tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+              kotlinOptions { jvmTarget = "17" }
+          }
+          // --- end patch ---
+          EOF
 
       - name: Build Debug APK
         uses: gradle/gradle-build-action@v3
@@ -70,6 +94,7 @@ jobs:
           arguments: ":app:assembleDebug"
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: NovaFlux-APK
